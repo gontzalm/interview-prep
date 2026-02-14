@@ -1,0 +1,14 @@
+# python
+__pycache__
+.venv
+
+# cdk
+.cdk*
+cdk.out
+
+# other
+*.env
+.coverage
+
+# generated
+infra/docker

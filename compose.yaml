@@ -1,0 +1,59 @@
+services:
+  ui:
+    build:
+      context: .
+      dockerfile: ui/Dockerfile
+    ports:
+      - 127.0.0.1:8000:8000
+    env_file:
+      - local.env
+    environment:
+      BACKEND_URL: http://agent:8000
+    volumes:
+      - aws-credentials:/root/.aws:ro
+    depends_on:
+      - agent
+
+  agent:
+    build:
+      context: .
+      dockerfile: src/agent/Dockerfile
+    env_file:
+      - local.env
+    environment:
+      MCP_URL: http://mcp:8000
+      CORS_ALLOW_ORIGINS: http://localhost:8000
+    volumes:
+      - aws-credentials:/root/.aws:ro
+    depends_on:
+      - mcp
+
+  mcp:
+    build:
+      context: .
+      dockerfile: src/tools/Dockerfile
+    env_file:
+      - local.env
+    environment:
+      RESEARCH_SUBAGENT_URL: http://research-subagent:8000
+    volumes:
+      - aws-credentials:/root/.aws:ro
+    depends_on:
+      - research-subagent
+
+  research-subagent:
+    build:
+      context: .
+      dockerfile: src/research_subagent/Dockerfile
+    env_file:
+      - local.env
+    volumes:
+      - aws-credentials:/root/.aws:ro
+
+volumes:
+  aws-credentials:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${HOME}/.aws

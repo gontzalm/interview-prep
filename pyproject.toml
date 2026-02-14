@@ -1,0 +1,30 @@
+[project]
+name = "interview-prep"
+version = "0.1.0"
+description = "Agentic interview preparation tool"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+agent = ["fastapi[standard]>=0.129.0", "pydantic-ai>=1.58.0"]
+infra = ["aws-cdk-lib>=2.238.0", "constructs>=10.4.5"]
+research-subagent = [
+  "boto3>=1.42.47",
+  "fasta2a>=0.6.0",
+  "pydantic-ai>=1.58.0",
+  "tavily-python>=0.7.21",
+]
+tools = [
+  "boto3>=1.42.47",
+  "fasta2a>=0.1.0",
+  "fastmcp>=2.14.5",
+  "md2pdf>=3.1.0",
+]
+ui = [
+  "boto3>=1.42.47",
+  "chainlit>=2.9.6",
+  "httpx>=0.28.1",
+  "httpx-sse>=0.4.3",
+  "pydantic-ai-slim>=1.58.0",
+]
