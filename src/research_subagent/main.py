@@ -3,13 +3,22 @@ import os
 from pathlib import Path
 
 import boto3
+import logfire
 from pydantic_ai import Agent
 from tavily import TavilyClient
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Read Tavily API key from AWS Secrets Manager
+# Set up Logfire
+os.environ["LOGFIRE_TOKEN"] = boto3.client("secretsmanager").get_secret_value(
+    SecretId=os.environ["LOGFIRE_SECRET"]
+)["SecretString"]
+
+logfire.configure()
+logfire.instrument_pydantic_ai()
+
+# Set up Tavily
 _tavily_api_key = boto3.client("secretsmanager").get_secret_value(
     SecretId=os.environ["TAVILY_SECRET"]
 )["SecretString"]

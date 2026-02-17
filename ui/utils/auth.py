@@ -13,6 +13,7 @@ def setup_oauth() -> None:
     ) -> cl.User:
 
         default_user.metadata = {
+            "token": token,
             "email": raw_user_data["email"],
         }
 

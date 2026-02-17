@@ -1,4 +1,6 @@
 import textwrap
+from collections.abc import Sequence
+from functools import cached_property
 from pathlib import Path
 from string import Template
 from typing import final
@@ -24,7 +26,7 @@ class LwaLambdaFunction(Construct):
         use_apigw: Whether to front the Lambda with API Gateway + Cognito authorizer.
         streaming_response: Whether to enable response streaming.
         uv_group: The uv dependency group to install.
-        app_module: The ASGI app module path (e.g. ``src.agent.main:app``).
+        cmd_parts: The command parts to run inside the container.
         memory: Lambda memory in MB.
         timeout: Lambda timeout duration.
         environment: Environment variables for the Lambda function.
@@ -35,21 +37,27 @@ class LwaLambdaFunction(Construct):
     _DOCKERFILE_TEMPLATE = Template(
         textwrap.dedent("""\
             FROM python:3.13
-            COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+            COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
             COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 /lambda-adapter /opt/extensions/lambda-adapter
 
             ENV AWS_LWA_PORT=8000
+            ENV UV_LINK_MODE=copy
+            ENV UV_COMPILE_BYTECODE=1
+            ENV PATH="/var/task/.venv/bin:$$PATH"
 
             WORKDIR /var/task
 
-            COPY pyproject.toml uv.lock ./
-            RUN uv sync --group ${uv_group} --no-install-project
+            COPY pyproject.toml uv.lock .
+            RUN --mount=type=cache,target=/root/.cache/uv \\
+                uv sync --group ${uv_group} --no-install-project
 
-            COPY ${copy_dirs}
+            ${copy_dirs}
 
             CMD [${cmd}]
         """)
     )
+    _CMD_PARTS_POST = ["--host", "0.0.0.0", "--port", "8000"]
 
     def __init__(
         self,
@@ -60,12 +68,12 @@ class LwaLambdaFunction(Construct):
         streaming_response: bool = False,
         uv_group: str,
         src_dirs: list[str],
-        app_module: str,
-        app_dir: str | None = None,
+        cmd_parts: list[str],
         memory: int = 256,
         timeout: cdk.Duration = cdk.Duration.seconds(30),
         environment: dict[str, str] | None = None,
         cognito_authorizer_pool: cognito.UserPool | None = None,
+        cognito_authorization_scopes: Sequence[cognito.OAuthScope] | None = None,
         cors_allow_origins: list[str] | None = None,
     ) -> None:
         super().__init__(scope, id)
@@ -83,11 +91,12 @@ class LwaLambdaFunction(Construct):
 
         copy_lines = "\n".join(f"COPY {d} ./{d}" for d in src_dirs)
 
-        cmd_parts = ["uv", "run", "uvicorn", "--port", "8000"]
-        if app_dir:
-            cmd_parts.extend(["--app-dir", app_dir])
-        cmd_parts.append(app_module)
-        cmd = ", ".join(f'"{p}"' for p in cmd_parts)
+        cmd = ", ".join(
+            f'"{p}"'
+            for p in cmd_parts
+            + self._CMD_PARTS_POST
+            + (["--root-path", "prod"] if use_apigw else [])
+        )
 
         dockerfile_path = DOCKERFILES_DIR / f"{id}.Dockerfile"
         dockerfile_content = self._DOCKERFILE_TEMPLATE.safe_substitute(
@@ -108,16 +117,16 @@ class LwaLambdaFunction(Construct):
                 str(project_root),
                 file=str(dockerfile_path.relative_to(project_root)),
             ),
-            architecture=lambda_.Architecture.ARM_64,  # pyright: ignore[reportAny]
+            architecture=lambda_.Architecture.ARM_64,
             memory_size=memory,
             timeout=timeout,
-            environment=environment,
+            environment=env,
         )
 
         if use_apigw:
-            lambda_integration = apigw.LambdaIntegration(self.function)  # pyright: ignore[reportArgumentType]
+            lambda_integration = apigw.LambdaIntegration(self.function)
 
-            self.apigw = apigw.RestApi(
+            self._apigw = apigw.RestApi(
                 scope,
                 f"{id}-apigw",
                 default_cors_preflight_options=apigw.CorsOptions(
@@ -126,7 +135,7 @@ class LwaLambdaFunction(Construct):
                 ),
             )
 
-            _ = self.apigw.root.add_proxy(
+            _ = self._apigw.root.add_proxy(
                 default_integration=lambda_integration,
                 default_method_options=apigw.MethodOptions(
                     authorizer=apigw.CognitoUserPoolsAuthorizer(
@@ -134,25 +143,36 @@ class LwaLambdaFunction(Construct):
                         f"{id}-cognito-authorizer",
                         cognito_user_pools=[cognito_authorizer_pool],
                     ),
+                    authorization_scopes=[
+                        scope.scope_name for scope in cognito_authorization_scopes
+                    ]
+                    if cognito_authorization_scopes is not None
+                    else None,
                 )
                 if cognito_authorizer_pool is not None
                 else None,
             )
         else:
             # Use Function URL directly
-            invoke_mode = (
-                lambda_.InvokeMode.RESPONSE_STREAM
-                if streaming_response
-                else lambda_.InvokeMode.BUFFERED
-            )
-            self.function_url = self.function.add_function_url(
+            self._function_url = self.function.add_function_url(
                 auth_type=lambda_.FunctionUrlAuthType.AWS_IAM,
-                invoke_mode=invoke_mode,
+                invoke_mode=lambda_.InvokeMode.RESPONSE_STREAM
+                if streaming_response
+                else lambda_.InvokeMode.BUFFERED,
             )
+
+    @cached_property
+    def url(self) -> str:
+        if hasattr(self, "_apigw"):
+            return self._apigw.url
+        else:
+            return self._function_url.url
 
     def grant_invoke_url(self, grantee: iam.IGrantable) -> None:
         """Grant permission to invoke this function's URL."""
-        _ = self.function.grant_invoke(grantee)
+        if not hasattr(self, "_function_url"):
+            raise ValueError("Cannot grant permissions on URL if `use_apigw=True`")
+        _ = self.function.grant_invoke_url(grantee)
 
 
 @final
@@ -181,7 +201,7 @@ class GithubActionsDeployRole(iam.Role):
             scope,
             id,
             role_name=role_name,
-            assumed_by=iam.FederatedPrincipal(  # pyright: ignore[reportArgumentType]
+            assumed_by=iam.FederatedPrincipal(
                 provider.open_id_connect_provider_arn,
                 {
                     "StringLike": {f"{self._PROVIDER_URL}:sub": f"repo:{repo}:*"},
@@ -196,7 +216,7 @@ class GithubActionsDeployRole(iam.Role):
             iam.PolicyStatement(
                 actions=["sts:AssumeRole"],
                 resources=[
-                    f"arn:aws:iam::{account}:role/cdk-{cdk.DefaultStackSynthesizer.DEFAULT_QUALIFIER}-*"  # pyright: ignore[reportAny]
+                    f"arn:aws:iam::{account}:role/cdk-{cdk.DefaultStackSynthesizer.DEFAULT_QUALIFIER}-*"
                 ],
             )
         )

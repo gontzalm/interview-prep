@@ -42,6 +42,7 @@ async def on_message(message: cl.Message):
     chat_history = cl.user_session.get("chat_history") or []
     user = cl.user_session.get("user")
 
+    auth_headers = {"Authorization": f"Bearer {user.metadata['token']}"}
     payload = {
         "user_email": user.metadata["email"],
         "message": message.content,
@@ -55,7 +56,9 @@ async def on_message(message: cl.Message):
                 payload["resume_bytes_b64"] = base64.b64encode(pdf_data).decode()
                 break
 
-    async with httpx.AsyncClient(base_url=BACKEND_URL, timeout=300.0) as client:
+    async with httpx.AsyncClient(
+        base_url=BACKEND_URL, headers=auth_headers, timeout=300.0
+    ) as client:
         async with aconnect_sse(client, "POST", "/chat", json=payload) as event_source:
             async for sse in event_source.aiter_sse():
                 match sse.event:

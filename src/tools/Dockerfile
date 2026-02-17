@@ -10,10 +10,15 @@ RUN apt update && apt install -y \
 
 WORKDIR /app
 
+ENV UV_LINK_MODE=copy
+ENV UV_COMPILE_BYTECODE=1
+ENV PATH="/app/.venv/bin:$PATH"
+
 COPY pyproject.toml uv.lock ./
-RUN uv sync --group tools --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --group tools --no-install-project
 
 COPY src/__init__.py ./src/__init__.py
 COPY src/tools/ ./src/tools/
 
-CMD ["uv", "run", "fastmcp", "run", "src/tools/main.py:mcp", "--transport", "http", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "src.tools.main:app", "--host", "0.0.0.0", "--port", "8000"]

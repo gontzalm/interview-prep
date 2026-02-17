@@ -4,6 +4,9 @@ import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+import boto3
+import httpx
+import logfire
 from pydantic_ai import (
     Agent,
     AgentRunResultEvent,
@@ -24,9 +27,18 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
+from .._shared.auth import AwsBotoAuth
 from .models import ChatRequest
 
 logger = logging.getLogger(__name__)
+
+# Set up Logfire
+os.environ["LOGFIRE_TOKEN"] = boto3.client("secretsmanager").get_secret_value(
+    SecretId=os.environ["LOGFIRE_SECRET"]
+)["SecretString"]
+
+logfire.configure()
+logfire.instrument_pydantic_ai()
 
 MAX_HISTORY_MESSAGES = 20
 
@@ -34,8 +46,10 @@ MAX_HISTORY_MESSAGES = 20
 def create_mcp_server_client(user_email: str) -> MCPServerStreamableHTTP:
     """Create an MCP server connection with the user's email header injected."""
     return MCPServerStreamableHTTP(
-        os.environ["MCP_URL"] + "/mcp",
-        headers={"X-User-Email": user_email},
+        os.environ["MCP_URL"],
+        http_client=httpx.AsyncClient(
+            auth=AwsBotoAuth(), headers={"X-User-Email": user_email}, timeout=20.0
+        ),
     )
 
 
