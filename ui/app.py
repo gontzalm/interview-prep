@@ -60,51 +60,63 @@ async def on_message(message: cl.Message):
         base_url=BACKEND_URL, headers=auth_headers, timeout=300.0
     ) as client:
         async with aconnect_sse(client, "POST", "/chat", json=payload) as event_source:
-            async for sse in event_source.aiter_sse():
-                match sse.event:
-                    case "token":
-                        data = json.loads(sse.data)
-                        await msg.stream_token(data["text"])
+            try:
+                async for sse in event_source.aiter_sse():
+                    match sse.event:
+                        case "token":
+                            data = json.loads(sse.data)
+                            await msg.stream_token(data["text"])
 
-                    case "tool_call":
-                        data = json.loads(sse.data)
-                        async with cl.Step(name=data["name"], type="tool") as step:
-                            step.input = data["args"]
+                        case "tool_call":
+                            data = json.loads(sse.data)
+                            async with cl.Step(name=data["name"], type="tool") as step:
+                                step.input = data["args"]
 
-                    case "pdf_generated":
-                        data = json.loads(sse.data)
-                        msg.elements = [
-                            cl.Pdf(
-                                name="Interview Prep",
-                                url=data["url"],
-                                display="inline",
-                            )
-                        ]
+                        case "pdf_generated":
+                            data = json.loads(sse.data)
+                            msg.elements = [
+                                cl.Pdf(
+                                    name="Interview Prep",
+                                    url=data["url"],
+                                    display="inline",
+                                )
+                            ]
 
-                    case "prep_list":
-                        data = json.loads(sse.data)
-                        table_lines = [
-                            "| Document | Created | Download |",
-                            "| --- | --- | --- |",
-                        ]
-                        for item in data["preps"]:
-                            table_lines.append(
-                                f"| {item['name']} | {item['created_at']} | [Download PDF]({item['url']}) |"
-                            )
-                        table_md = "\n".join(table_lines)
-                        await msg.stream_token(f"\n\n{table_md}\n\n")
+                        case "prep_list":
+                            data = json.loads(sse.data)
+                            table_lines = [
+                                "| Document | Created | Download |",
+                                "| --- | --- | --- |",
+                            ]
+                            for item in data["preps"]:
+                                table_lines.append(
+                                    f"| {item['name']} | {item['created_at']} | [Download PDF]({item['url']}) |"
+                                )
+                            table_md = "\n".join(table_lines)
+                            await msg.stream_token(f"\n\n{table_md}\n\n")
 
-                    case "error":
-                        data = json.loads(sse.data)
-                        msg.content = f"An error occurred: {data['message']}"
+                        case "error":
+                            data = json.loads(sse.data)
+                            msg.content = f"An error occurred: {data['message']}"
 
-                    case _:
-                        pass
+                        case _:
+                            pass
+            except httpx.RemoteProtocolError as e:
+                if (
+                    str(e)
+                    == "peer closed connection without sending complete message body (incomplete chunked read)"
+                ):
+                    await msg.stream_token(
+                        " The research is taking a bit longer than expected. Please list the interview preps in 4-5 minutes to download your report!"
+                    )
+                else:
+                    raise
 
     await msg.send()
 
     chat_history.append(ModelRequest(parts=[UserPromptPart(content=message.content)]))
     chat_history.append(ModelResponse(parts=[TextPart(content=msg.content)]))
+    cl.user_session.set("chat_history", chat_history)
 
 
 @cl.on_chat_resume

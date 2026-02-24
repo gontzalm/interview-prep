@@ -133,6 +133,9 @@ credentials are needed.
 
 ## 🏗 Architecture
 
+> [!NOTE]
+> **Architecture Update:** Due to AWS Lambda execution time and state limitations, the current deployment uses a direct FastAPI-based interaction for the Research Sub-agent instead of the `agent.to_a2a()` pattern. Implementing a full Agent-to-Agent (A2A) workflow in a serverless environment would require a dedicated storage layer (for state persistence) and background workers (e.g., a second Lambda function) to manage long-running handovers.
+
 ```mermaid
 graph TD
     User((User)) <--> UI[Chainlit UI]

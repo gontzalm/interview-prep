@@ -13,4 +13,4 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 COPY src/research_subagent/ ./src/research_subagent/
 
-CMD ["uvicorn", "src.research_subagent.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "src.research_subagent.main_a2a:app", "--host", "0.0.0.0", "--port", "8000"]

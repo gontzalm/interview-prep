@@ -19,6 +19,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --group tools --no-install-project
 
 COPY src/__init__.py ./src/__init__.py
+COPY src/_shared/ ./src/_shared/
 COPY src/tools/ ./src/tools/
 
-CMD ["uvicorn", "src.tools.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "src.tools.main_a2a:app", "--host", "0.0.0.0", "--port", "8000"]

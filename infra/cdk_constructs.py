@@ -29,6 +29,7 @@ class LwaLambdaFunction(Construct):
         cmd_parts: The command parts to run inside the container.
         memory: Lambda memory in MB.
         timeout: Lambda timeout duration.
+        install_libs: Extra libraries to install in the Docker image.
         environment: Environment variables for the Lambda function.
         cognito_authorizer_pool: Cognito user pool for API Gateway authorizer.
         cors_allow_origins: Allowed CORS origins.
@@ -40,6 +41,8 @@ class LwaLambdaFunction(Construct):
 
             COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
             COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 /lambda-adapter /opt/extensions/lambda-adapter
+
+            ${install_libs_cmd}
 
             ENV AWS_LWA_PORT=8000
             ENV UV_LINK_MODE=copy
@@ -71,6 +74,7 @@ class LwaLambdaFunction(Construct):
         cmd_parts: list[str],
         memory: int = 256,
         timeout: cdk.Duration = cdk.Duration.seconds(30),
+        install_libs: list[str] | None = None,
         environment: dict[str, str] | None = None,
         cognito_authorizer_pool: cognito.UserPool | None = None,
         cognito_authorization_scopes: Sequence[cognito.OAuthScope] | None = None,
@@ -89,6 +93,11 @@ class LwaLambdaFunction(Construct):
         # Generate Dockerfile
         DOCKERFILES_DIR.mkdir(parents=True, exist_ok=True)
 
+        install_libs_cmd = (
+            f"RUN apt update && apt install -y {' '.join(install_libs)}"
+            if install_libs is not None
+            else ""
+        )
         copy_lines = "\n".join(f"COPY {d} ./{d}" for d in src_dirs)
 
         cmd = ", ".join(
@@ -101,6 +110,7 @@ class LwaLambdaFunction(Construct):
         dockerfile_path = DOCKERFILES_DIR / f"{id}.Dockerfile"
         dockerfile_content = self._DOCKERFILE_TEMPLATE.safe_substitute(
             {
+                "install_libs_cmd": install_libs_cmd,
                 "uv_group": uv_group,
                 "copy_dirs": copy_lines,
                 "cmd": cmd,
@@ -124,7 +134,12 @@ class LwaLambdaFunction(Construct):
         )
 
         if use_apigw:
-            lambda_integration = apigw.LambdaIntegration(self.function)
+            lambda_integration = apigw.LambdaIntegration(
+                self.function,
+                response_transfer_mode=apigw.ResponseTransferMode.STREAM
+                if streaming_response
+                else apigw.ResponseTransferMode.BUFFERED,
+            )
 
             self._apigw = apigw.RestApi(
                 scope,

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -8,9 +9,8 @@ from pathlib import Path
 import boto3
 import httpx
 from botocore.exceptions import ClientError
-
-# from fasta2a.client import A2AClient
-# from fasta2a.schema import Message
+from fasta2a.client import A2AClient
+from fasta2a.schema import Message
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_headers
 from md2pdf.core import md2pdf
@@ -31,6 +31,12 @@ NO_RESUME_MSG = (
 
 s3 = boto3.client("s3")
 mcp = FastMCP("Interview Prep Tools")
+
+# Not compatible with Lambda deployment
+a2a_client = A2AClient(
+    base_url=RESEARCH_SUBAGENT_URL,
+    http_client=httpx.AsyncClient(auth=AwsBotoAuth(), timeout=20.0),
+)
 
 
 def _get_user_email() -> str:
@@ -154,32 +160,69 @@ async def generate_prep(job_description: str) -> str:
     if resume_text is None:
         return NO_RESUME_MSG
 
-    async with httpx.AsyncClient(
-        base_url=RESEARCH_SUBAGENT_URL, auth=AwsBotoAuth(), timeout=600.0
-    ) as client:
-        r = await client.post(
-            "",
-            json={
-                "query": "\n\n".join(
+    # FastA2A is not compatible with Lambda deployment
+    message: Message = {
+        "role": "user",
+        "parts": [
+            {
+                "kind": "text",
+                "text": "\n\n".join(
                     [
                         "## Candidate Resume",
                         resume_text,
                         "## Job Description",
                         job_description,
                     ]
+                ),
+            }
+        ],
+        "kind": "message",
+        "message_id": f"prep-{datetime.now().isoformat()}",
+    }
+
+    r = await a2a_client.send_message(message)
+    task_id = r["result"]["id"]
+
+    logger.info("Started subagent task ID '%s'", task_id)
+
+    # Poll until completed
+    for _ in range(120):  # Max ~2 minutes of polling
+        logger.info("Polling subagent task ID '%s' status", task_id)
+        r = await a2a_client.get_task(task_id)
+        task = r["result"]
+        state = task["status"]["state"]
+
+        match state:
+            case "completed":
+                break
+            case "failed" | "canceled" | "rejected":
+                logger.error(
+                    "Subagent task ID '%s' failed with state '%s' ",
+                    task_id,
+                    state,
                 )
-            },
-        )
+                return f"Research subagent failed with state: {state}"
 
-        r.raise_for_status()
+        await asyncio.sleep(1)
+    else:
+        logger.warning("Subagent task ID '%s' timed out", task_id)
+        return "Research subagent timed out."
 
-    markdown_content = r.json()["result"]
+    # Extract markdown from artifacts
+    result = ""
+    for artifact in task.get("artifacts", []):
+        for part in artifact["parts"]:
+            if part["kind"] == "text":
+                result += part["text"]
 
-    if not markdown_content:
+    if not result:
         return "Research subagent returned no content."
 
+    _, heading_symbol, content = result.partition("#")
+    md_content = heading_symbol + content
+
     # Extract company-position from the markdown title for the filename
-    title_match = re.search(r"#.*?:\s*(.+?)$", markdown_content, re.MULTILINE)
+    title_match = re.search(r"#.*?:\s*(.+?)$", md_content, re.MULTILINE)
     if title_match:
         filename_base = re.sub(r"[^\w\s-]", "", title_match.group(1).strip())
         filename_base = re.sub(r"\s+", "-", filename_base).lower()
@@ -189,9 +232,7 @@ async def generate_prep(job_description: str) -> str:
     # Convert Markdown -> PDF using md2pdf
     with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
         tmp_path = Path(tmp.name)
-        md2pdf(
-            tmp_path, raw=markdown_content, css=Path(__file__).parent / "pdf-styles.css"
-        )
+        md2pdf(tmp_path, raw=md_content, css=Path(__file__).parent / "pdf-styles.css")
         pdf_bytes = tmp_path.read_bytes()
 
     # Upload to S3
